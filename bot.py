@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 BaixaRapidaoBot - Telegram Video Downloader
-Deploy no Render.com
+Render.com compatible | Token leak protection
 """
 
 import os
@@ -11,6 +11,7 @@ import asyncio
 import tempfile
 import logging
 from pathlib import Path
+from aiohttp import web
 
 from telegram import Update
 from telegram.ext import (
@@ -27,16 +28,24 @@ TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("BOT_TOKEN nao encontrado! Configure no Render Dashboard.")
 
+PORT = int(os.environ.get("PORT", "10000"))
 MAX_FILE_SIZE_MB = 49
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 TEMP_DIR = Path(tempfile.gettempdir()) / "tg_bot_downloads"
 TEMP_DIR.mkdir(exist_ok=True)
 
+# ─── LOGGING (protege token) ─────────────────────────────────────
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+# Desativa logs detalhados que podem vazar o token
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("telegram.ext").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
 # ─── COMANDOS ────────────────────────────────────────────────────
 
@@ -199,9 +208,28 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             pass
 
 
+# ─── HTTP SERVER ─────────────────────────────────────────────────
+
+async def health_handler(request):
+    return web.Response(text="BaixaRapidaoBot OK", status=200)
+
+
+async def start_http_server():
+    app = web.Application()
+    app.router.add_get("/", health_handler)
+    app.router.add_get("/health", health_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logger.info("HTTP server iniciado na porta " + str(PORT))
+
+
 # ─── MAIN ────────────────────────────────────────────────────────
 
 async def main() -> None:
+    await start_http_server()
+
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
