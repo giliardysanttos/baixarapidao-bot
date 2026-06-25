@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 BaixaRapidaoBot - Telegram Video Downloader
-v7 - FORCED webhook cleanup + single instance
+v9 - Regex expandida + suporte a todos os formatos de URL
 """
 
 import os
@@ -47,6 +47,10 @@ if not TOKEN:
 
 PORT = int(os.environ.get("PORT", "10000"))
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").rstrip("/")
+
+if not WEBHOOK_URL:
+    raise ValueError("WEBHOOK_URL nao configurado! Ex: https://baixarapidao-bot.onrender.com")
+
 MAX_FILE_SIZE_MB = 49
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 TEMP_DIR = Path(tempfile.gettempdir()) / "tg_bot_downloads"
@@ -60,6 +64,39 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 for name in ["telegram", "telegram.ext", "httpx", "aiohttp", "yt_dlp"]:
     logging.getLogger(name).setLevel(logging.WARNING)
+
+# ─── REGEX DE URLS SUPORTADAS ──────────────────────────────────
+# Cobre TODAS as variações de dominio das principais plataformas
+URL_PATTERN = re.compile(
+    r"https?://"
+    r"(?:www\.|m\.|vm\.|vt\.)?"
+    r"(?:"
+    r"youtube\.com|"
+    r"youtu\.be|"
+    r"youtube-nocookie\.com|"
+    r"music\.youtube\.com|"
+    r"tiktok\.com|"
+    r"instagram\.com|"
+    r"instagr\.am|"
+    r"twitter\.com|"
+    r"x\.com|"
+    r"t\.co|"
+    r"facebook\.com|"
+    r"fb\.watch|"
+    r"fb\.com|"
+    r"reddit\.com|"
+    r"redd\.it|"
+    r"vimeo\.com|"
+    r"dailymotion\.com|"
+    r"dai\.ly|"
+    r"threads\.net|"
+    r"pinterest\.com|"
+    r"pin\.it|"
+    r"twitch\.tv"
+    r")"
+    r"[/\?]?[^\s]*",
+    re.IGNORECASE
+)
 
 # ─── COMANDOS ────────────────────────────────────────────────────
 
@@ -146,7 +183,7 @@ def get_ydl_opts(url: str, output_path: str) -> dict:
             "format": "best",
             "headers": {**real_headers, "Referer": "https://www.tiktok.com/"},
         })
-    elif "instagram" in url:
+    elif "instagram" in url or "instagr.am" in url:
         base_opts.update({
             "format": "best",
             "headers": {**real_headers, "Referer": "https://www.instagram.com/"},
@@ -156,7 +193,7 @@ def get_ydl_opts(url: str, output_path: str) -> dict:
             "format": "best[filesize<50M] / best",
             "headers": real_headers,
         })
-    elif "facebook" in url or "fb.watch" in url:
+    elif "facebook" in url or "fb.watch" in url or "fb.com" in url:
         base_opts.update({
             "format": "best[filesize<50M] / best",
             "headers": real_headers,
@@ -205,16 +242,21 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     url = message.text.strip()
     chat_id = message.chat_id
 
-    url_pattern = re.compile(
-        r"https?://(?:www\.)?(?:youtube\.com|youtu\.be|tiktok\.com|"
-        r"instagram\.com|twitter\.com|x\.com|facebook\.com|fb\.watch|"
-        r"reddit\.com|vimeo\.com|dailymotion\.com|threads\.net)/[^\s]+"
-    )
+    logger.info("URL recebida: " + url[:100])
 
-    if not url_pattern.search(url):
+    if not URL_PATTERN.search(url):
+        logger.warning("URL nao corresponde ao padrao: " + url[:100])
         await message.reply_text(
-            "❌ Isso não parece ser um link de vídeo suportado.\n"
-            "Envie links de: YouTube, TikTok, Instagram, Twitter/X, Facebook, etc."
+            "❌ Isso não parece ser um link de vídeo suportado.\n\n"
+            "✅ <b>Plataformas suportadas:</b>\n"
+            "• YouTube (youtube.com, youtu.be)\n"
+            "• TikTok (tiktok.com, vm.tiktok.com)\n"
+            "• Instagram (instagram.com, instagr.am)\n"
+            "• Twitter/X (twitter.com, x.com)\n"
+            "• Facebook (facebook.com, fb.watch)\n"
+            "• Reddit, Vimeo, Dailymotion, Threads\n\n"
+            "💡 Envie o link direto do vídeo, sem texto ao redor.",
+            parse_mode="HTML",
         )
         return
 
@@ -299,39 +341,32 @@ async def main() -> None:
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
 
-    # Webhook path
     webhook_path = "/webhook/" + TOKEN.split(":")[0]
-    webhook_full_url = WEBHOOK_URL + webhook_path if WEBHOOK_URL else ""
+    webhook_full_url = WEBHOOK_URL + webhook_path
 
-    # Inicializa o bot
     await app.initialize()
     await app.start()
 
-    # SEMPRE deleta webhook antigo primeiro (limpa sujeira de deploys anteriores)
-    logger.info("Deletando webhook antigo...")
-    try:
-        await app.bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Webhook antigo deletado com sucesso")
-    except Exception as e:
-        logger.warning("Erro ao deletar webhook antigo: " + str(e))
-
-    await asyncio.sleep(2)
-
-    # Se tem WEBHOOK_URL, usa webhook. Senao, polling.
-    if webhook_full_url:
-        logger.info("Configurando webhook: " + webhook_full_url.replace(TOKEN.split(":")[0], "***"))
+    logger.info("LIMPANDO webhook antigo...")
+    for _ in range(3):
         try:
-            await app.bot.set_webhook(url=webhook_full_url)
-            logger.info("Webhook ativo")
+            await app.bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Webhook antigo DELETADO")
+            break
         except Exception as e:
-            logger.error("Falha ao setar webhook: " + str(e))
-            logger.info("Fallback para polling...")
-            await app.updater.start_polling(drop_pending_updates=True)
-    else:
-        logger.info("WEBHOOK_URL nao configurado. Usando polling.")
-        await app.updater.start_polling(drop_pending_updates=True)
+            logger.warning("Tentativa falhou: " + str(e))
+            await asyncio.sleep(2)
 
-    # Servidor HTTP
+    await asyncio.sleep(3)
+
+    logger.info("Setando webhook: " + webhook_full_url.replace(TOKEN.split(":")[0], "***"))
+    try:
+        await app.bot.set_webhook(url=webhook_full_url)
+        logger.info("Webhook ATIVO")
+    except Exception as e:
+        logger.error("FALHA ao setar webhook: " + str(e))
+        sys.exit(1)
+
     async def webhook_handler(request):
         data = await request.json()
         update = Update.de_json(data, app.bot)
@@ -341,22 +376,10 @@ async def main() -> None:
     async def health_handler(request):
         return web.Response(text="BaixaRapidaoBot OK", status=200)
 
-    async def reset_webhook_handler(request):
-        """Endpoint para forçar reset do webhook."""
-        try:
-            await app.bot.delete_webhook(drop_pending_updates=True)
-            await asyncio.sleep(1)
-            if webhook_full_url:
-                await app.bot.set_webhook(url=webhook_full_url)
-            return web.Response(text="Webhook resetado", status=200)
-        except Exception as e:
-            return web.Response(text="Erro: " + str(e), status=500)
-
     web_app = web.Application()
     web_app.router.add_post(webhook_path, webhook_handler)
     web_app.router.add_get("/", health_handler)
     web_app.router.add_get("/health", health_handler)
-    web_app.router.add_get("/reset-webhook", reset_webhook_handler)
 
     runner = web.AppRunner(web_app)
     await runner.setup()
