@@ -2,14 +2,16 @@
 # -*- coding: utf-8 -*-
 """
 BaixaRapidaoBot - Telegram Video Downloader
-v5 - YouTube bypass + Webhook
+v6 - Lockfile + Webhook fix + YouTube bypass maximo
 """
 
 import os
+import sys
 import re
 import asyncio
 import tempfile
 import logging
+import fcntl
 from pathlib import Path
 from aiohttp import web
 
@@ -22,6 +24,22 @@ from telegram.ext import (
     filters,
 )
 import yt_dlp
+
+# ─── SINGLE INSTANCE LOCK ────────────────────────────────────────
+LOCK_FILE = "/tmp/baixarapidao_bot.lock"
+
+def acquire_lock():
+    """Garante que apenas uma instancia rode."""
+    global lock_fd
+    lock_fd = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fd.write(str(os.getpid()))
+        lock_fd.flush()
+        return True
+    except (IOError, OSError):
+        print("OUTRA INSTANCIA JA ESTA RODANDO. ENCERRANDO.")
+        return False
 
 # ─── CONFIG ──────────────────────────────────────────────────────
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -45,6 +63,7 @@ logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
+logging.getLogger("yt_dlp").setLevel(logging.WARNING)
 
 # ─── COMANDOS ────────────────────────────────────────────────────
 
@@ -70,7 +89,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "⚠️ <b>Observações:</b>\n"
         "• Vídeos muito longos podem exceder o limite de 50MB\n"
         "• Conteúdo privado não funciona\n"
-        "• YouTube pode pedir verificação em alguns vídeos\n\n"
+        "• YouTube pode bloquear alguns vídeos (use TikTok/Instagram para 100% certeza)\n\n"
         "🛠 <b>Comandos:</b> /start /help /status"
     )
     await update.message.reply_text(text, parse_mode="HTML")
@@ -98,64 +117,73 @@ def get_ydl_opts(url: str, output_path: str) -> dict:
         "postprocessors": [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}],
     }
 
-    # YouTube: tenta bypass com varias estrategias
+    # Headers realistas
+    real_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0",
+    }
+
+    # YouTube: bypass maximo
     if "youtube" in url or "youtu.be" in url:
         base_opts.update({
             "format": "best[filesize<50M] / best[filesize_approx<50M] / best",
+            "headers": real_headers,
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["web", "android", "ios"],
+                    "player_client": ["web", "android", "ios", "tv_embedded"],
                     "player_skip": ["webpage", "configs", "js"],
+                    "formats": ["missing_pot"],
                 }
             },
-            "headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-                "Accept-Encoding": "gzip, deflate",
-                "Connection": "keep-alive",
-            },
+            "cookiesfrombrowser": None,
+            "no_check_certificate": True,
+            "geo_bypass": True,
+            "geo_bypass_country": "US",
         })
 
     # TikTok
     elif "tiktok" in url:
         base_opts.update({
             "format": "best",
-            "headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                "Referer": "https://www.tiktok.com/",
-            },
+            "headers": {**real_headers, "Referer": "https://www.tiktok.com/"},
         })
 
     # Instagram
     elif "instagram" in url:
         base_opts.update({
             "format": "best",
-            "headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                "Referer": "https://www.instagram.com/",
-            },
+            "headers": {**real_headers, "Referer": "https://www.instagram.com/"},
         })
 
     # Twitter/X
     elif "twitter" in url or "x.com" in url:
         base_opts.update({
             "format": "best[filesize<50M] / best",
-            "headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            },
+            "headers": real_headers,
         })
 
     # Facebook
     elif "facebook" in url or "fb.watch" in url:
         base_opts.update({
             "format": "best[filesize<50M] / best",
+            "headers": real_headers,
         })
 
-    # Padrao para outras plataformas
+    # Padrao
     else:
         base_opts.update({
             "format": "best[filesize<50M] / best[filesize_approx<50M] / best",
+            "headers": real_headers,
         })
 
     return base_opts
@@ -255,13 +283,14 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await processing_msg.edit_text("🔒 Conteúdo privado. Tente um link público.")
         elif "Unsupported URL" in error_msg:
             await processing_msg.edit_text("❌ URL não suportada. Verifique o link.")
-        elif "Sign in" in error_msg or "confirm" in error_msg.lower():
+        elif "Sign in" in error_msg or "confirm" in error_msg.lower() or "bot" in error_msg.lower():
             await processing_msg.edit_text(
-                "⚠️ O YouTube bloqueou este vídeo por verificação de bot.\n"
-                "Tente:\n"
-                "• Outro vídeo do YouTube\n"
-                "• TikTok, Instagram, Twitter/X (geralmente funcionam melhor)\n"
-                "• Um Short em vez de vídeo longo"
+                "⚠️ O YouTube bloqueou este vídeo por verificação anti-bot.\n\n"
+                "💡 <b>Soluções:</b>\n"
+                "• Tente um <b>Short</b> em vez de vídeo longo\n"
+                "• Use <b>TikTok</b> ou <b>Instagram</b> (funcionam 100%)\n"
+                "• Ou baixe do YouTube no seu PC e envie aqui",
+                parse_mode="HTML",
             )
         else:
             await processing_msg.edit_text("❌ Erro ao baixar: " + error_msg[:200])
@@ -279,6 +308,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 # ─── MAIN (WEBHOOK) ──────────────────────────────────────────────
 
 async def main() -> None:
+    # Lockfile: garante uma unica instancia
+    if not acquire_lock():
+        sys.exit(1)
+
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -286,20 +319,25 @@ async def main() -> None:
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
 
-    webhook_path = "/webhook/" + TOKEN
-    webhook_full_url = WEBHOOK_URL + webhook_path if WEBHOOK_URL else ""
+    # Webhook path seguro
+    webhook_path = "/webhook/" + TOKEN.split(":")[0]
+    webhook_full_url = WEBHOOK_URL.rstrip("/") + webhook_path if WEBHOOK_URL else ""
 
     if webhook_full_url:
         await app.initialize()
         await app.start()
+        # Deleta webhook antigo e seta novo
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        await asyncio.sleep(1)
         await app.bot.set_webhook(url=webhook_full_url)
         logger.info("Webhook configurado")
     else:
         logger.warning("WEBHOOK_URL nao configurado. Usando polling.")
         await app.initialize()
         await app.start()
-        await app.updater.start_polling()
+        await app.updater.start_polling(drop_pending_updates=True)
 
+    # Servidor HTTP
     async def webhook_handler(request):
         data = await request.json()
         update = Update.de_json(data, app.bot)
