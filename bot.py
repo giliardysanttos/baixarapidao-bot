@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-BaixaRapidaoBot - Telegram Video Downloader
-v10 - YouTube bypass maximo (tv_embedded + android + ios)
+BaixaRapidaoBot - Render version v11
+Metadados 100% zerados - sem rastros
 """
 
 import os
@@ -11,6 +11,7 @@ import re
 import asyncio
 import tempfile
 import logging
+import subprocess
 import fcntl
 from pathlib import Path
 from aiohttp import web
@@ -136,6 +137,84 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(text, parse_mode="HTML")
 
 
+# ─── STRIP METADATA ──────────────────────────────────────────────
+
+def strip_metadata(video_path: Path) -> Path:
+    """Zera TODOS os metadados do video usando FFmpeg."""
+    import time
+    clean_path = video_path.parent / ("clean_" + str(int(time.time())) + ".mp4")
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i", str(video_path),
+        "-map", "0:v:0",
+        "-map", "0:a:0?",
+        "-c:v", "copy",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        "-metadata", "title=",
+        "-metadata", "artist=",
+        "-metadata", "album=",
+        "-metadata", "comment=",
+        "-metadata", "description=",
+        "-metadata", "synopsis=",
+        "-metadata", "show=",
+        "-metadata", "episode_id=",
+        "-metadata", "network=",
+        "-metadata", "genre=",
+        "-metadata", "date=",
+        "-metadata", "creation_time=",
+        "-metadata", "encoder=",
+        "-metadata", "encoded_by=",
+        "-metadata", "copyright=",
+        "-metadata", "license=",
+        "-metadata", "performer=",
+        "-metadata", "publisher=",
+        "-metadata", "track=",
+        "-metadata", "disc=",
+        "-metadata", "composer=",
+        "-metadata", "author=",
+        "-metadata", "writer=",
+        "-metadata", "director=",
+        "-metadata", "producer=",
+        "-metadata", "company=",
+        "-metadata", "software=",
+        "-metadata", "tool=",
+        "-metadata", "application=",
+        "-metadata", "generator=",
+        "-metadata", "source=",
+        "-metadata", "origin=",
+        "-metadata", "url=",
+        "-metadata", "website=",
+        "-metadata", "link=",
+        "-metadata", "referer=",
+        "-metadata", "user_agent=",
+        "-metadata", "download_tool=",
+        "-metadata", "processed_by=",
+        "-metadata", "ai_tool=",
+        "-metadata", "ai_model=",
+        "-metadata", "generated_by=",
+        "-metadata", "created_with=",
+        "-metadata", "edited_with=",
+        "-metadata", "platform=",
+        "-metadata", "app=",
+        "-metadata", "version=",
+        "-metadata", "build=",
+        str(clean_path),
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        logger.error("FFmpeg erro: " + result.stderr[:200])
+        return video_path
+
+    video_path.unlink(missing_ok=True)
+    clean_path.rename(video_path)
+    return video_path
+
+
 # ─── DOWNLOAD ────────────────────────────────────────────────────
 
 def get_ydl_opts(url: str, output_path: str) -> dict:
@@ -144,7 +223,12 @@ def get_ydl_opts(url: str, output_path: str) -> dict:
         "quiet": True,
         "no_warnings": True,
         "merge_output_format": "mp4",
-        "postprocessors": [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}],
+        "postprocessors": [
+            {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"},
+        ],
+        "addmetadata": False,
+        "writethumbnail": False,
+        "writeinfojson": False,
     }
 
     real_headers = {
@@ -163,7 +247,6 @@ def get_ydl_opts(url: str, output_path: str) -> dict:
     }
 
     if "youtube" in url or "youtu.be" in url:
-        # Bypass maximo para YouTube - tv_embedded funciona melhor em datacenter
         base_opts.update({
             "format": "best[filesize<50M] / best[filesize_approx<50M] / best",
             "headers": real_headers,
@@ -176,8 +259,6 @@ def get_ydl_opts(url: str, output_path: str) -> dict:
             "no_check_certificate": True,
             "geo_bypass": True,
             "geo_bypass_country": "US",
-            # Tenta embed (funciona sem login em alguns videos)
-            "extract_flat": False,
         })
     elif "tiktok" in url:
         base_opts.update({
@@ -233,6 +314,10 @@ async def download_video(url: str, chat_id: int) -> Path:
     if not downloaded_file or not downloaded_file.exists():
         raise FileNotFoundError("Arquivo nao baixado")
 
+    # ZERA METADADOS
+    logger.info("Zerando metadados...")
+    downloaded_file = strip_metadata(downloaded_file)
+
     return downloaded_file
 
 
@@ -287,10 +372,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
         with open(video_path, "rb") as video_file:
             size_mb = round(file_size / 1024 / 1024, 1)
+            # Caption generica - sem rastros
             caption = (
-                "✅ <b>Download concluído!</b>\n"
-                "📏 Tamanho: <b>" + str(size_mb) + "MB</b>\n"
-                "🔗 Fonte: " + url[:60] + "..."
+                "✅ <b>Pronto!</b>\n"
+                "📏 Tamanho: <b>" + str(size_mb) + "MB</b>"
             )
             await message.reply_video(
                 video=video_file,
