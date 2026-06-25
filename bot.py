@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 BaixaRapidaoBot - Telegram Video Downloader
-Render.com compatible | Token leak protection
+v5 - YouTube bypass + Webhook
 """
 
 import os
@@ -29,19 +29,18 @@ if not TOKEN:
     raise ValueError("BOT_TOKEN nao encontrado! Configure no Render Dashboard.")
 
 PORT = int(os.environ.get("PORT", "10000"))
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 MAX_FILE_SIZE_MB = 49
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 TEMP_DIR = Path(tempfile.gettempdir()) / "tg_bot_downloads"
 TEMP_DIR.mkdir(exist_ok=True)
 
-# ─── LOGGING (protege token) ─────────────────────────────────────
+# ─── LOGGING ─────────────────────────────────────────────────────
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
-
-# Desativa logs detalhados que podem vazar o token
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -70,7 +69,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "3. Aguarde o download e envio\n\n"
         "⚠️ <b>Observações:</b>\n"
         "• Vídeos muito longos podem exceder o limite de 50MB\n"
-        "• Conteúdo privado não funciona\n\n"
+        "• Conteúdo privado não funciona\n"
+        "• YouTube pode pedir verificação em alguns vídeos\n\n"
         "🛠 <b>Comandos:</b> /start /help /status"
     )
     await update.message.reply_text(text, parse_mode="HTML")
@@ -87,14 +87,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # ─── DOWNLOAD ────────────────────────────────────────────────────
 
-async def download_video(url: str, chat_id: int) -> Path:
-    import time
-    import glob as glob_module
-    unique_id = str(chat_id) + "_" + str(int(time.time() * 1000))
-    output_path = str(TEMP_DIR / (unique_id + ".%(ext)s"))
+def get_ydl_opts(url: str, output_path: str) -> dict:
+    """Retorna opcoes do yt-dlp otimizadas por plataforma."""
 
-    ydl_opts = {
-        "format": "best[filesize<50M] / best[filesize_approx<50M] / best",
+    base_opts = {
         "outtmpl": output_path,
         "quiet": True,
         "no_warnings": True,
@@ -102,12 +98,76 @@ async def download_video(url: str, chat_id: int) -> Path:
         "postprocessors": [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}],
     }
 
-    if "tiktok" in url or "instagram" in url:
-        ydl_opts["format"] = "best"
-        ydl_opts["addheaders"] = [
-            ("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        ]
+    # YouTube: tenta bypass com varias estrategias
+    if "youtube" in url or "youtu.be" in url:
+        base_opts.update({
+            "format": "best[filesize<50M] / best[filesize_approx<50M] / best",
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["web", "android", "ios"],
+                    "player_skip": ["webpage", "configs", "js"],
+                }
+            },
+            "headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Accept-Encoding": "gzip, deflate",
+                "Connection": "keep-alive",
+            },
+        })
 
+    # TikTok
+    elif "tiktok" in url:
+        base_opts.update({
+            "format": "best",
+            "headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                "Referer": "https://www.tiktok.com/",
+            },
+        })
+
+    # Instagram
+    elif "instagram" in url:
+        base_opts.update({
+            "format": "best",
+            "headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                "Referer": "https://www.instagram.com/",
+            },
+        })
+
+    # Twitter/X
+    elif "twitter" in url or "x.com" in url:
+        base_opts.update({
+            "format": "best[filesize<50M] / best",
+            "headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            },
+        })
+
+    # Facebook
+    elif "facebook" in url or "fb.watch" in url:
+        base_opts.update({
+            "format": "best[filesize<50M] / best",
+        })
+
+    # Padrao para outras plataformas
+    else:
+        base_opts.update({
+            "format": "best[filesize<50M] / best[filesize_approx<50M] / best",
+        })
+
+    return base_opts
+
+
+async def download_video(url: str, chat_id: int) -> Path:
+    import time
+    import glob as glob_module
+    unique_id = str(chat_id) + "_" + str(int(time.time() * 1000))
+    output_path = str(TEMP_DIR / (unique_id + ".%(ext)s"))
+
+    ydl_opts = get_ydl_opts(url, output_path)
     downloaded_file = None
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -195,6 +255,14 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await processing_msg.edit_text("🔒 Conteúdo privado. Tente um link público.")
         elif "Unsupported URL" in error_msg:
             await processing_msg.edit_text("❌ URL não suportada. Verifique o link.")
+        elif "Sign in" in error_msg or "confirm" in error_msg.lower():
+            await processing_msg.edit_text(
+                "⚠️ O YouTube bloqueou este vídeo por verificação de bot.\n"
+                "Tente:\n"
+                "• Outro vídeo do YouTube\n"
+                "• TikTok, Instagram, Twitter/X (geralmente funcionam melhor)\n"
+                "• Um Short em vez de vídeo longo"
+            )
         else:
             await processing_msg.edit_text("❌ Erro ao baixar: " + error_msg[:200])
     except Exception as e:
@@ -208,28 +276,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             pass
 
 
-# ─── HTTP SERVER ─────────────────────────────────────────────────
-
-async def health_handler(request):
-    return web.Response(text="BaixaRapidaoBot OK", status=200)
-
-
-async def start_http_server():
-    app = web.Application()
-    app.router.add_get("/", health_handler)
-    app.router.add_get("/health", health_handler)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    logger.info("HTTP server iniciado na porta " + str(PORT))
-
-
-# ─── MAIN ────────────────────────────────────────────────────────
+# ─── MAIN (WEBHOOK) ──────────────────────────────────────────────
 
 async def main() -> None:
-    await start_http_server()
-
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -237,11 +286,39 @@ async def main() -> None:
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
 
-    logger.info("BaixaRapidaoBot iniciado! Aguardando mensagens...")
+    webhook_path = "/webhook/" + TOKEN
+    webhook_full_url = WEBHOOK_URL + webhook_path if WEBHOOK_URL else ""
 
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
+    if webhook_full_url:
+        await app.initialize()
+        await app.start()
+        await app.bot.set_webhook(url=webhook_full_url)
+        logger.info("Webhook configurado")
+    else:
+        logger.warning("WEBHOOK_URL nao configurado. Usando polling.")
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+
+    async def webhook_handler(request):
+        data = await request.json()
+        update = Update.de_json(data, app.bot)
+        await app.process_update(update)
+        return web.Response(text="OK")
+
+    async def health_handler(request):
+        return web.Response(text="BaixaRapidaoBot OK", status=200)
+
+    web_app = web.Application()
+    web_app.router.add_post(webhook_path, webhook_handler)
+    web_app.router.add_get("/", health_handler)
+    web_app.router.add_get("/health", health_handler)
+
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logger.info("Servidor HTTP na porta " + str(PORT))
 
     while True:
         await asyncio.sleep(3600)
