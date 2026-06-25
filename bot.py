@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 BaixaRapidaoBot - Telegram Video Downloader
-v6 - Lockfile + Webhook fix + YouTube bypass maximo
+v7 - FORCED webhook cleanup + single instance
 """
 
 import os
@@ -29,7 +29,6 @@ import yt_dlp
 LOCK_FILE = "/tmp/baixarapidao_bot.lock"
 
 def acquire_lock():
-    """Garante que apenas uma instancia rode."""
     global lock_fd
     lock_fd = open(LOCK_FILE, "w")
     try:
@@ -38,16 +37,16 @@ def acquire_lock():
         lock_fd.flush()
         return True
     except (IOError, OSError):
-        print("OUTRA INSTANCIA JA ESTA RODANDO. ENCERRANDO.")
+        print("OUTRA INSTANCIA JA RODANDO. ENCERRANDO.")
         return False
 
 # ─── CONFIG ──────────────────────────────────────────────────────
 TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
-    raise ValueError("BOT_TOKEN nao encontrado! Configure no Render Dashboard.")
+    raise ValueError("BOT_TOKEN nao encontrado!")
 
 PORT = int(os.environ.get("PORT", "10000"))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").rstrip("/")
 MAX_FILE_SIZE_MB = 49
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 TEMP_DIR = Path(tempfile.gettempdir()) / "tg_bot_downloads"
@@ -59,11 +58,8 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
-logging.getLogger("telegram").setLevel(logging.WARNING)
-logging.getLogger("telegram.ext").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("aiohttp").setLevel(logging.WARNING)
-logging.getLogger("yt_dlp").setLevel(logging.WARNING)
+for name in ["telegram", "telegram.ext", "httpx", "aiohttp", "yt_dlp"]:
+    logging.getLogger(name).setLevel(logging.WARNING)
 
 # ─── COMANDOS ────────────────────────────────────────────────────
 
@@ -107,8 +103,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # ─── DOWNLOAD ────────────────────────────────────────────────────
 
 def get_ydl_opts(url: str, output_path: str) -> dict:
-    """Retorna opcoes do yt-dlp otimizadas por plataforma."""
-
     base_opts = {
         "outtmpl": output_path,
         "quiet": True,
@@ -117,7 +111,6 @@ def get_ydl_opts(url: str, output_path: str) -> dict:
         "postprocessors": [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}],
     }
 
-    # Headers realistas
     real_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -133,7 +126,6 @@ def get_ydl_opts(url: str, output_path: str) -> dict:
         "Cache-Control": "max-age=0",
     }
 
-    # YouTube: bypass maximo
     if "youtube" in url or "youtu.be" in url:
         base_opts.update({
             "format": "best[filesize<50M] / best[filesize_approx<50M] / best",
@@ -145,41 +137,30 @@ def get_ydl_opts(url: str, output_path: str) -> dict:
                     "formats": ["missing_pot"],
                 }
             },
-            "cookiesfrombrowser": None,
             "no_check_certificate": True,
             "geo_bypass": True,
             "geo_bypass_country": "US",
         })
-
-    # TikTok
     elif "tiktok" in url:
         base_opts.update({
             "format": "best",
             "headers": {**real_headers, "Referer": "https://www.tiktok.com/"},
         })
-
-    # Instagram
     elif "instagram" in url:
         base_opts.update({
             "format": "best",
             "headers": {**real_headers, "Referer": "https://www.instagram.com/"},
         })
-
-    # Twitter/X
     elif "twitter" in url or "x.com" in url:
         base_opts.update({
             "format": "best[filesize<50M] / best",
             "headers": real_headers,
         })
-
-    # Facebook
     elif "facebook" in url or "fb.watch" in url:
         base_opts.update({
             "format": "best[filesize<50M] / best",
             "headers": real_headers,
         })
-
-    # Padrao
     else:
         base_opts.update({
             "format": "best[filesize<50M] / best[filesize_approx<50M] / best",
@@ -305,10 +286,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             pass
 
 
-# ─── MAIN (WEBHOOK) ──────────────────────────────────────────────
+# ─── MAIN ────────────────────────────────────────────────────────
 
 async def main() -> None:
-    # Lockfile: garante uma unica instancia
     if not acquire_lock():
         sys.exit(1)
 
@@ -319,22 +299,36 @@ async def main() -> None:
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
 
-    # Webhook path seguro
+    # Webhook path
     webhook_path = "/webhook/" + TOKEN.split(":")[0]
-    webhook_full_url = WEBHOOK_URL.rstrip("/") + webhook_path if WEBHOOK_URL else ""
+    webhook_full_url = WEBHOOK_URL + webhook_path if WEBHOOK_URL else ""
 
-    if webhook_full_url:
-        await app.initialize()
-        await app.start()
-        # Deleta webhook antigo e seta novo
+    # Inicializa o bot
+    await app.initialize()
+    await app.start()
+
+    # SEMPRE deleta webhook antigo primeiro (limpa sujeira de deploys anteriores)
+    logger.info("Deletando webhook antigo...")
+    try:
         await app.bot.delete_webhook(drop_pending_updates=True)
-        await asyncio.sleep(1)
-        await app.bot.set_webhook(url=webhook_full_url)
-        logger.info("Webhook configurado")
+        logger.info("Webhook antigo deletado com sucesso")
+    except Exception as e:
+        logger.warning("Erro ao deletar webhook antigo: " + str(e))
+
+    await asyncio.sleep(2)
+
+    # Se tem WEBHOOK_URL, usa webhook. Senao, polling.
+    if webhook_full_url:
+        logger.info("Configurando webhook: " + webhook_full_url.replace(TOKEN.split(":")[0], "***"))
+        try:
+            await app.bot.set_webhook(url=webhook_full_url)
+            logger.info("Webhook ativo")
+        except Exception as e:
+            logger.error("Falha ao setar webhook: " + str(e))
+            logger.info("Fallback para polling...")
+            await app.updater.start_polling(drop_pending_updates=True)
     else:
-        logger.warning("WEBHOOK_URL nao configurado. Usando polling.")
-        await app.initialize()
-        await app.start()
+        logger.info("WEBHOOK_URL nao configurado. Usando polling.")
         await app.updater.start_polling(drop_pending_updates=True)
 
     # Servidor HTTP
@@ -347,10 +341,22 @@ async def main() -> None:
     async def health_handler(request):
         return web.Response(text="BaixaRapidaoBot OK", status=200)
 
+    async def reset_webhook_handler(request):
+        """Endpoint para forçar reset do webhook."""
+        try:
+            await app.bot.delete_webhook(drop_pending_updates=True)
+            await asyncio.sleep(1)
+            if webhook_full_url:
+                await app.bot.set_webhook(url=webhook_full_url)
+            return web.Response(text="Webhook resetado", status=200)
+        except Exception as e:
+            return web.Response(text="Erro: " + str(e), status=500)
+
     web_app = web.Application()
     web_app.router.add_post(webhook_path, webhook_handler)
     web_app.router.add_get("/", health_handler)
     web_app.router.add_get("/health", health_handler)
+    web_app.router.add_get("/reset-webhook", reset_webhook_handler)
 
     runner = web.AppRunner(web_app)
     await runner.setup()
