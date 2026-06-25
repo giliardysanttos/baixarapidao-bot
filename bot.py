@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 BaixaRapidaoBot - Telegram Video Downloader
-v8 - 100% WEBHOOK ONLY - zero polling, zero conflito
+v7 - FORCED webhook cleanup + single instance
 """
 
 import os
@@ -47,10 +47,6 @@ if not TOKEN:
 
 PORT = int(os.environ.get("PORT", "10000"))
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").rstrip("/")
-
-if not WEBHOOK_URL:
-    raise ValueError("WEBHOOK_URL nao configurado! Ex: https://baixarapidao-bot.onrender.com")
-
 MAX_FILE_SIZE_MB = 49
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 TEMP_DIR = Path(tempfile.gettempdir()) / "tg_bot_downloads"
@@ -303,34 +299,37 @@ async def main() -> None:
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
 
+    # Webhook path
     webhook_path = "/webhook/" + TOKEN.split(":")[0]
-    webhook_full_url = WEBHOOK_URL + webhook_path
+    webhook_full_url = WEBHOOK_URL + webhook_path if WEBHOOK_URL else ""
 
-    # Inicializa
+    # Inicializa o bot
     await app.initialize()
     await app.start()
 
-    # LIMPA webhook antigo COM FORCA
-    logger.info("LIMPANDO webhook antigo...")
-    for _ in range(3):
-        try:
-            await app.bot.delete_webhook(drop_pending_updates=True)
-            logger.info("Webhook antigo DELETADO")
-            break
-        except Exception as e:
-            logger.warning("Tentativa falhou: " + str(e))
-            await asyncio.sleep(2)
-
-    await asyncio.sleep(3)
-
-    # Seta webhook NOVO
-    logger.info("Setando webhook: " + webhook_full_url.replace(TOKEN.split(":")[0], "***"))
+    # SEMPRE deleta webhook antigo primeiro (limpa sujeira de deploys anteriores)
+    logger.info("Deletando webhook antigo...")
     try:
-        await app.bot.set_webhook(url=webhook_full_url)
-        logger.info("Webhook ATIVO")
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Webhook antigo deletado com sucesso")
     except Exception as e:
-        logger.error("FALHA ao setar webhook: " + str(e))
-        sys.exit(1)
+        logger.warning("Erro ao deletar webhook antigo: " + str(e))
+
+    await asyncio.sleep(2)
+
+    # Se tem WEBHOOK_URL, usa webhook. Senao, polling.
+    if webhook_full_url:
+        logger.info("Configurando webhook: " + webhook_full_url.replace(TOKEN.split(":")[0], "***"))
+        try:
+            await app.bot.set_webhook(url=webhook_full_url)
+            logger.info("Webhook ativo")
+        except Exception as e:
+            logger.error("Falha ao setar webhook: " + str(e))
+            logger.info("Fallback para polling...")
+            await app.updater.start_polling(drop_pending_updates=True)
+    else:
+        logger.info("WEBHOOK_URL nao configurado. Usando polling.")
+        await app.updater.start_polling(drop_pending_updates=True)
 
     # Servidor HTTP
     async def webhook_handler(request):
@@ -342,10 +341,22 @@ async def main() -> None:
     async def health_handler(request):
         return web.Response(text="BaixaRapidaoBot OK", status=200)
 
+    async def reset_webhook_handler(request):
+        """Endpoint para forçar reset do webhook."""
+        try:
+            await app.bot.delete_webhook(drop_pending_updates=True)
+            await asyncio.sleep(1)
+            if webhook_full_url:
+                await app.bot.set_webhook(url=webhook_full_url)
+            return web.Response(text="Webhook resetado", status=200)
+        except Exception as e:
+            return web.Response(text="Erro: " + str(e), status=500)
+
     web_app = web.Application()
     web_app.router.add_post(webhook_path, webhook_handler)
     web_app.router.add_get("/", health_handler)
     web_app.router.add_get("/health", health_handler)
+    web_app.router.add_get("/reset-webhook", reset_webhook_handler)
 
     runner = web.AppRunner(web_app)
     await runner.setup()
