@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 BaixaRapidaoBot - Telegram Video Downloader
-v9 - Regex expandida + suporte a todos os formatos de URL
+v10 - YouTube bypass maximo (tv_embedded + android + ios)
 """
 
 import os
@@ -49,7 +49,7 @@ PORT = int(os.environ.get("PORT", "10000"))
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").rstrip("/")
 
 if not WEBHOOK_URL:
-    raise ValueError("WEBHOOK_URL nao configurado! Ex: https://baixarapidao-bot.onrender.com")
+    raise ValueError("WEBHOOK_URL nao configurado!")
 
 MAX_FILE_SIZE_MB = 49
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
@@ -65,8 +65,7 @@ logger = logging.getLogger(__name__)
 for name in ["telegram", "telegram.ext", "httpx", "aiohttp", "yt_dlp"]:
     logging.getLogger(name).setLevel(logging.WARNING)
 
-# ─── REGEX DE URLS SUPORTADAS ──────────────────────────────────
-# Cobre TODAS as variações de dominio das principais plataformas
+# ─── REGEX DE URLS ─────────────────────────────────────────────
 URL_PATTERN = re.compile(
     r"https?://"
     r"(?:www\.|m\.|vm\.|vt\.)?"
@@ -164,19 +163,21 @@ def get_ydl_opts(url: str, output_path: str) -> dict:
     }
 
     if "youtube" in url or "youtu.be" in url:
+        # Bypass maximo para YouTube - tv_embedded funciona melhor em datacenter
         base_opts.update({
             "format": "best[filesize<50M] / best[filesize_approx<50M] / best",
             "headers": real_headers,
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["web", "android", "ios", "tv_embedded"],
+                    "player_client": ["tv_embedded", "android", "ios", "web"],
                     "player_skip": ["webpage", "configs", "js"],
-                    "formats": ["missing_pot"],
                 }
             },
             "no_check_certificate": True,
             "geo_bypass": True,
             "geo_bypass_country": "US",
+            # Tenta embed (funciona sem login em alguns videos)
+            "extract_flat": False,
         })
     elif "tiktok" in url:
         base_opts.update({
@@ -250,7 +251,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             "❌ Isso não parece ser um link de vídeo suportado.\n\n"
             "✅ <b>Plataformas suportadas:</b>\n"
             "• YouTube (youtube.com, youtu.be)\n"
-            "• TikTok (tiktok.com, vm.tiktok.com)\n"
+            "• TikTok (tiktok.com, vm.tiktok.com, vt.tiktok.com)\n"
             "• Instagram (instagram.com, instagr.am)\n"
             "• Twitter/X (twitter.com, x.com)\n"
             "• Facebook (facebook.com, fb.watch)\n"
@@ -302,6 +303,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
+        logger.error("DownloadError: " + error_msg[:300])
         if "Private" in error_msg or "login" in error_msg.lower():
             await processing_msg.edit_text("🔒 Conteúdo privado. Tente um link público.")
         elif "Unsupported URL" in error_msg:
@@ -310,9 +312,12 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await processing_msg.edit_text(
                 "⚠️ O YouTube bloqueou este vídeo por verificação anti-bot.\n\n"
                 "💡 <b>Soluções:</b>\n"
-                "• Tente um <b>Short</b> em vez de vídeo longo\n"
+                "• Tente um <b>Short</b> (youtube.com/shorts/...)\n"
                 "• Use <b>TikTok</b> ou <b>Instagram</b> (funcionam 100%)\n"
-                "• Ou baixe do YouTube no seu PC e envie aqui",
+                "• Baixe do YouTube no seu PC e envie aqui\n\n"
+                "ℹ️ <b>Por que acontece?</b>\n"
+                "O YouTube detecta que o download vem de um servidor (datacenter) "
+                "e exige verificação. Isso é limitação do IP, não do bot.",
                 parse_mode="HTML",
             )
         else:
