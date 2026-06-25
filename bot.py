@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-BaixaRapidaoBot - Render version v11
-Metadados 100% zerados - sem rastros
+BaixaRapidaoBot - Render v12
+Trata erro Forbidden (usuario bloqueou o bot) - nao crasha mais
 """
 
 import os
@@ -17,6 +17,7 @@ from pathlib import Path
 from aiohttp import web
 
 from telegram import Update
+from telegram.error import Forbidden, NetworkError, TelegramError
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -101,111 +102,88 @@ URL_PATTERN = re.compile(
 # ─── COMANDOS ────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    text = (
-        "👋 <b>Ola, " + user.first_name + "!</b>\n\n"
-        "🎬 <b>Baixa Rápidão Bot</b>\n"
-        "Envie qualquer link de vídeo e eu baixo para você.\n\n"
-        "✅ <b>Plataformas:</b> YouTube, TikTok, Instagram, Twitter/X, Facebook, Reddit e +1000\n"
-        "📏 <b>Limite:</b> até " + str(MAX_FILE_SIZE_MB) + "MB por arquivo\n"
-        "⚡ <b>Comandos:</b> /start /help /status"
-    )
-    await update.message.reply_html(text, disable_web_page_preview=True)
+    try:
+        user = update.effective_user
+        text = (
+            "👋 <b>Ola, " + user.first_name + "!</b>\n\n"
+            "🎬 <b>Baixa Rápidão Bot</b>\n"
+            "Envie qualquer link de vídeo e eu baixo para você.\n\n"
+            "✅ <b>Plataformas:</b> YouTube, TikTok, Instagram, Twitter/X, Facebook, Reddit e +1000\n"
+            "📏 <b>Limite:</b> até " + str(MAX_FILE_SIZE_MB) + "MB por arquivo\n"
+            "⚡ <b>Comandos:</b> /start /help /status"
+        )
+        await update.message.reply_html(text, disable_web_page_preview=True)
+    except Forbidden:
+        logger.warning("Usuario " + str(update.effective_user.id) + " bloqueou o bot")
+    except Exception as e:
+        logger.error("Erro em start: " + str(e))
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = (
-        "📖 <b>Como usar:</b>\n"
-        "1. Copie o link do vídeo\n"
-        "2. Cole aqui no chat\n"
-        "3. Aguarde o download e envio\n\n"
-        "⚠️ <b>Observações:</b>\n"
-        "• Vídeos muito longos podem exceder o limite de 50MB\n"
-        "• Conteúdo privado não funciona\n"
-        "• YouTube pode bloquear alguns vídeos (use TikTok/Instagram para 100% certeza)\n\n"
-        "🛠 <b>Comandos:</b> /start /help /status"
-    )
-    await update.message.reply_text(text, parse_mode="HTML")
+    try:
+        text = (
+            "📖 <b>Como usar:</b>\n"
+            "1. Copie o link do vídeo\n"
+            "2. Cole aqui no chat\n"
+            "3. Aguarde o download e envio\n\n"
+            "⚠️ <b>Observações:</b>\n"
+            "• Vídeos muito longos podem exceder o limite de 50MB\n"
+            "• Conteúdo privado não funciona\n"
+            "• YouTube pode bloquear alguns vídeos (use TikTok/Instagram para 100% certeza)\n\n"
+            "🛠 <b>Comandos:</b> /start /help /status"
+        )
+        await update.message.reply_text(text, parse_mode="HTML")
+    except Forbidden:
+        logger.warning("Usuario bloqueou o bot (help)")
+    except Exception as e:
+        logger.error("Erro em help: " + str(e))
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = (
-        "🟢 <b>BaixaRapidaoBot Online</b>\n"
-        "📥 Pronto para baixar vídeos\n"
-        "🔧 yt-dlp ativo | Limite: 50MB"
-    )
-    await update.message.reply_text(text, parse_mode="HTML")
+    try:
+        text = (
+            "🟢 <b>BaixaRapidaoBot Online</b>\n"
+            "📥 Pronto para baixar vídeos\n"
+            "🔧 yt-dlp ativo | Limite: 50MB"
+        )
+        await update.message.reply_text(text, parse_mode="HTML")
+    except Forbidden:
+        logger.warning("Usuario bloqueou o bot (status)")
+    except Exception as e:
+        logger.error("Erro em status: " + str(e))
 
 
 # ─── STRIP METADATA ──────────────────────────────────────────────
 
 def strip_metadata(video_path: Path) -> Path:
-    """Zera TODOS os metadados do video usando FFmpeg."""
     import time
     clean_path = video_path.parent / ("clean_" + str(int(time.time())) + ".mp4")
 
     cmd = [
-        "ffmpeg",
-        "-y",
-        "-i", str(video_path),
-        "-map", "0:v:0",
-        "-map", "0:a:0?",
-        "-c:v", "copy",
-        "-c:a", "copy",
+        "ffmpeg", "-y", "-i", str(video_path),
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-c:v", "copy", "-c:a", "copy",
         "-movflags", "+faststart",
-        "-metadata", "title=",
-        "-metadata", "artist=",
-        "-metadata", "album=",
-        "-metadata", "comment=",
-        "-metadata", "description=",
-        "-metadata", "synopsis=",
-        "-metadata", "show=",
-        "-metadata", "episode_id=",
-        "-metadata", "network=",
-        "-metadata", "genre=",
-        "-metadata", "date=",
-        "-metadata", "creation_time=",
-        "-metadata", "encoder=",
-        "-metadata", "encoded_by=",
-        "-metadata", "copyright=",
-        "-metadata", "license=",
-        "-metadata", "performer=",
-        "-metadata", "publisher=",
-        "-metadata", "track=",
-        "-metadata", "disc=",
-        "-metadata", "composer=",
-        "-metadata", "author=",
-        "-metadata", "writer=",
-        "-metadata", "director=",
-        "-metadata", "producer=",
-        "-metadata", "company=",
-        "-metadata", "software=",
-        "-metadata", "tool=",
-        "-metadata", "application=",
-        "-metadata", "generator=",
-        "-metadata", "source=",
-        "-metadata", "origin=",
-        "-metadata", "url=",
-        "-metadata", "website=",
-        "-metadata", "link=",
-        "-metadata", "referer=",
-        "-metadata", "user_agent=",
-        "-metadata", "download_tool=",
-        "-metadata", "processed_by=",
-        "-metadata", "ai_tool=",
-        "-metadata", "ai_model=",
-        "-metadata", "generated_by=",
-        "-metadata", "created_with=",
-        "-metadata", "edited_with=",
-        "-metadata", "platform=",
-        "-metadata", "app=",
-        "-metadata", "version=",
-        "-metadata", "build=",
+        "-metadata", "title=", "-metadata", "artist=", "-metadata", "album=",
+        "-metadata", "comment=", "-metadata", "description=", "-metadata", "synopsis=",
+        "-metadata", "show=", "-metadata", "episode_id=", "-metadata", "network=",
+        "-metadata", "genre=", "-metadata", "date=", "-metadata", "creation_time=",
+        "-metadata", "encoder=", "-metadata", "encoded_by=", "-metadata", "copyright=",
+        "-metadata", "license=", "-metadata", "performer=", "-metadata", "publisher=",
+        "-metadata", "track=", "-metadata", "disc=", "-metadata", "composer=",
+        "-metadata", "author=", "-metadata", "writer=", "-metadata", "director=",
+        "-metadata", "producer=", "-metadata", "company=", "-metadata", "software=",
+        "-metadata", "tool=", "-metadata", "application=", "-metadata", "generator=",
+        "-metadata", "source=", "-metadata", "origin=", "-metadata", "url=",
+        "-metadata", "website=", "-metadata", "link=", "-metadata", "referer=",
+        "-metadata", "user_agent=", "-metadata", "download_tool=", "-metadata", "processed_by=",
+        "-metadata", "ai_tool=", "-metadata", "ai_model=", "-metadata", "generated_by=",
+        "-metadata", "created_with=", "-metadata", "edited_with=", "-metadata", "platform=",
+        "-metadata", "app=", "-metadata", "version=", "-metadata", "build=",
         str(clean_path),
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
-
     if result.returncode != 0:
         logger.error("FFmpeg erro: " + result.stderr[:200])
         return video_path
@@ -219,79 +197,44 @@ def strip_metadata(video_path: Path) -> Path:
 
 def get_ydl_opts(url: str, output_path: str) -> dict:
     base_opts = {
-        "outtmpl": output_path,
-        "quiet": True,
-        "no_warnings": True,
+        "outtmpl": output_path, "quiet": True, "no_warnings": True,
         "merge_output_format": "mp4",
-        "postprocessors": [
-            {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"},
-        ],
-        "addmetadata": False,
-        "writethumbnail": False,
-        "writeinfojson": False,
+        "postprocessors": [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}],
+        "addmetadata": False, "writethumbnail": False, "writeinfojson": False,
     }
 
     real_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "DNT": "1",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Cache-Control": "max-age=0",
+        "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1", "Connection": "keep-alive", "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none", "Sec-Fetch-User": "?1", "Cache-Control": "max-age=0",
     }
 
     if "youtube" in url or "youtu.be" in url:
         base_opts.update({
             "format": "best[filesize<50M] / best[filesize_approx<50M] / best",
             "headers": real_headers,
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["tv_embedded", "android", "ios", "web"],
-                    "player_skip": ["webpage", "configs", "js"],
-                }
-            },
-            "no_check_certificate": True,
-            "geo_bypass": True,
-            "geo_bypass_country": "US",
+            "extractor_args": {"youtube": {"player_client": ["tv_embedded", "android", "ios", "web"], "player_skip": ["webpage", "configs", "js"]}},
+            "no_check_certificate": True, "geo_bypass": True, "geo_bypass_country": "US",
         })
     elif "tiktok" in url:
-        base_opts.update({
-            "format": "best",
-            "headers": {**real_headers, "Referer": "https://www.tiktok.com/"},
-        })
+        base_opts.update({"format": "best", "headers": {**real_headers, "Referer": "https://www.tiktok.com/"}})
     elif "instagram" in url or "instagr.am" in url:
-        base_opts.update({
-            "format": "best",
-            "headers": {**real_headers, "Referer": "https://www.instagram.com/"},
-        })
+        base_opts.update({"format": "best", "headers": {**real_headers, "Referer": "https://www.instagram.com/"}})
     elif "twitter" in url or "x.com" in url:
-        base_opts.update({
-            "format": "best[filesize<50M] / best",
-            "headers": real_headers,
-        })
+        base_opts.update({"format": "best[filesize<50M] / best", "headers": real_headers})
     elif "facebook" in url or "fb.watch" in url or "fb.com" in url:
-        base_opts.update({
-            "format": "best[filesize<50M] / best",
-            "headers": real_headers,
-        })
+        base_opts.update({"format": "best[filesize<50M] / best", "headers": real_headers})
     else:
-        base_opts.update({
-            "format": "best[filesize<50M] / best[filesize_approx<50M] / best",
-            "headers": real_headers,
-        })
+        base_opts.update({"format": "best[filesize<50M] / best[filesize_approx<50M] / best", "headers": real_headers})
 
     return base_opts
 
 
 async def download_video(url: str, chat_id: int) -> Path:
-    import time
-    import glob as glob_module
+    import time, glob as glob_module
     unique_id = str(chat_id) + "_" + str(int(time.time() * 1000))
     output_path = str(TEMP_DIR / (unique_id + ".%(ext)s"))
 
@@ -307,18 +250,13 @@ async def download_video(url: str, chat_id: int) -> Path:
                 downloaded_file = Path(matches[0])
             else:
                 for f in TEMP_DIR.glob(unique_id + "*"):
-                    if f.is_file():
-                        downloaded_file = f
-                        break
+                    if f.is_file(): downloaded_file = f; break
 
     if not downloaded_file or not downloaded_file.exists():
         raise FileNotFoundError("Arquivo nao baixado")
 
-    # ZERA METADADOS
     logger.info("Zerando metadados...")
-    downloaded_file = strip_metadata(downloaded_file)
-
-    return downloaded_file
+    return strip_metadata(downloaded_file)
 
 
 # ─── HANDLE URL ──────────────────────────────────────────────────
@@ -332,21 +270,29 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     if not URL_PATTERN.search(url):
         logger.warning("URL nao corresponde ao padrao: " + url[:100])
-        await message.reply_text(
-            "❌ Isso não parece ser um link de vídeo suportado.\n\n"
-            "✅ <b>Plataformas suportadas:</b>\n"
-            "• YouTube (youtube.com, youtu.be)\n"
-            "• TikTok (tiktok.com, vm.tiktok.com, vt.tiktok.com)\n"
-            "• Instagram (instagram.com, instagr.am)\n"
-            "• Twitter/X (twitter.com, x.com)\n"
-            "• Facebook (facebook.com, fb.watch)\n"
-            "• Reddit, Vimeo, Dailymotion, Threads\n\n"
-            "💡 Envie o link direto do vídeo, sem texto ao redor.",
-            parse_mode="HTML",
-        )
+        try:
+            await message.reply_text(
+                "❌ Isso não parece ser um link de vídeo suportado.\n\n"
+                "✅ <b>Plataformas suportadas:</b>\n"
+                "• YouTube (youtube.com, youtu.be)\n"
+                "• TikTok (tiktok.com, vm.tiktok.com, vt.tiktok.com)\n"
+                "• Instagram (instagram.com, instagr.am)\n"
+                "• Twitter/X (twitter.com, x.com)\n"
+                "• Facebook (facebook.com, fb.watch)\n"
+                "• Reddit, Vimeo, Dailymotion, Threads\n\n"
+                "💡 Envie o link direto do vídeo, sem texto ao redor.",
+                parse_mode="HTML",
+            )
+        except Forbidden:
+            logger.warning("Usuario bloqueou o bot (URL invalida)")
         return
 
-    processing_msg = await message.reply_text("⏳ Analisando link...")
+    processing_msg = None
+    try:
+        processing_msg = await message.reply_text("⏳ Analisando link...")
+    except Forbidden:
+        logger.warning("Usuario bloqueou o bot (nao conseguiu enviar 'analisando')")
+        return
 
     try:
         await processing_msg.edit_text("📥 Baixando vídeo, aguarde...")
@@ -359,57 +305,65 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         file_size = video_path.stat().st_size
         if file_size > MAX_FILE_SIZE_BYTES:
             size_mb = round(file_size / 1024 / 1024, 1)
-            await processing_msg.edit_text(
-                "⚠️ O vídeo tem <b>" + str(size_mb) + "MB</b> e excede o limite de "
-                "<b>" + str(MAX_FILE_SIZE_MB) + "MB</b> do Telegram.\n"
-                "Tente um vídeo mais curto.",
-                parse_mode="HTML",
-            )
+            try:
+                await processing_msg.edit_text(
+                    "⚠️ O vídeo tem <b>" + str(size_mb) + "MB</b> e excede o limite de "
+                    "<b>" + str(MAX_FILE_SIZE_MB) + "MB</b> do Telegram.\n"
+                    "Tente um vídeo mais curto.", parse_mode="HTML",
+                )
+            except Forbidden:
+                logger.warning("Usuario bloqueou o bot (aviso de tamanho)")
             video_path.unlink(missing_ok=True)
             return
 
-        await processing_msg.edit_text("📤 Enviando vídeo para você...")
+        try:
+            await processing_msg.edit_text("📤 Enviando vídeo para você...")
+        except Forbidden:
+            logger.warning("Usuario bloqueou o bot (enviando)")
+            video_path.unlink(missing_ok=True)
+            return
 
-        with open(video_path, "rb") as video_file:
-            size_mb = round(file_size / 1024 / 1024, 1)
-            # Caption generica - sem rastros
-            caption = (
-                "✅ <b>Pronto!</b>\n"
-                "📏 Tamanho: <b>" + str(size_mb) + "MB</b>"
-            )
-            await message.reply_video(
-                video=video_file,
-                caption=caption,
-                parse_mode="HTML",
-                supports_streaming=True,
-            )
-
-        await processing_msg.delete()
+        try:
+            with open(video_path, "rb") as video_file:
+                size_mb = round(file_size / 1024 / 1024, 1)
+                caption = "✅ <b>Pronto!</b>\n📏 Tamanho: <b>" + str(size_mb) + "MB</b>"
+                await message.reply_video(
+                    video=video_file, caption=caption, parse_mode="HTML", supports_streaming=True,
+                )
+            await processing_msg.delete()
+        except Forbidden:
+            logger.warning("Usuario bloqueou o bot (envio do video)")
 
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
         logger.error("DownloadError: " + error_msg[:300])
-        if "Private" in error_msg or "login" in error_msg.lower():
-            await processing_msg.edit_text("🔒 Conteúdo privado. Tente um link público.")
-        elif "Unsupported URL" in error_msg:
-            await processing_msg.edit_text("❌ URL não suportada. Verifique o link.")
-        elif "Sign in" in error_msg or "confirm" in error_msg.lower() or "bot" in error_msg.lower():
-            await processing_msg.edit_text(
-                "⚠️ O YouTube bloqueou este vídeo por verificação anti-bot.\n\n"
-                "💡 <b>Soluções:</b>\n"
-                "• Tente um <b>Short</b> (youtube.com/shorts/...)\n"
-                "• Use <b>TikTok</b> ou <b>Instagram</b> (funcionam 100%)\n"
-                "• Baixe do YouTube no seu PC e envie aqui\n\n"
-                "ℹ️ <b>Por que acontece?</b>\n"
-                "O YouTube detecta que o download vem de um servidor (datacenter) "
-                "e exige verificação. Isso é limitação do IP, não do bot.",
-                parse_mode="HTML",
-            )
-        else:
-            await processing_msg.edit_text("❌ Erro ao baixar: " + error_msg[:200])
+        try:
+            if "Private" in error_msg or "login" in error_msg.lower():
+                await processing_msg.edit_text("🔒 Conteúdo privado. Tente um link público.")
+            elif "Unsupported URL" in error_msg:
+                await processing_msg.edit_text("❌ URL não suportada. Verifique o link.")
+            elif "Sign in" in error_msg or "confirm" in error_msg.lower() or "bot" in error_msg.lower():
+                await processing_msg.edit_text(
+                    "⚠️ O YouTube bloqueou este vídeo por verificação anti-bot.\n\n"
+                    "💡 <b>Soluções:</b>\n"
+                    "• Tente um <b>Short</b> (youtube.com/shorts/...)\n"
+                    "• Use <b>TikTok</b> ou <b>Instagram</b> (funcionam 100%)\n"
+                    "• Baixe do YouTube no seu PC e envie aqui\n\n"
+                    "ℹ️ <b>Por que acontece?</b>\n"
+                    "O YouTube detecta que o download vem de um servidor (datacenter) "
+                    "e exige verificação. Isso é limitação do IP, não do bot.",
+                    parse_mode="HTML",
+                )
+            else:
+                await processing_msg.edit_text("❌ Erro ao baixar: " + error_msg[:200])
+        except Forbidden:
+            logger.warning("Usuario bloqueou o bot (erro de download)")
     except Exception as e:
         logger.exception("Erro inesperado")
-        await processing_msg.edit_text("❌ Erro: " + str(e)[:200])
+        try:
+            await processing_msg.edit_text("❌ Erro: " + str(e)[:200])
+        except Forbidden:
+            logger.warning("Usuario bloqueou o bot (erro inesperado)")
     finally:
         try:
             if 'video_path' in locals() and video_path.exists():
@@ -458,9 +412,14 @@ async def main() -> None:
         sys.exit(1)
 
     async def webhook_handler(request):
-        data = await request.json()
-        update = Update.de_json(data, app.bot)
-        await app.process_update(update)
+        try:
+            data = await request.json()
+            update = Update.de_json(data, app.bot)
+            await app.process_update(update)
+        except Forbidden:
+            logger.warning("Update de usuario que bloqueou o bot - ignorado")
+        except Exception as e:
+            logger.error("Erro no webhook: " + str(e))
         return web.Response(text="OK")
 
     async def health_handler(request):
